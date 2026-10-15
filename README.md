@@ -15,9 +15,9 @@ download, delete and upload through a queue that runs one transfer at a time.
   nozzle diameter; the current job with its thumbnail (greyed out above the printed height), progress,
   remaining time, estimated end and print time; pause, resume and stop; upload a G-code, optionally
   starting the print right away.
-- **Storage**: browse storages and folders, sort by name/date/size, preview and details of the selected
-  file, start a print, create folders. Select several files (Ctrl/Shift-click) to **download**,
-  **delete** or **upload** them in bulk.
+- **Storage**: browse storages and folders, sort by clicking a column header, see a preview and the
+  details of the selected file, start a print, create folders. Select several files (Ctrl/Shift-click)
+  to **download**, **delete** or **upload** them in bulk.
 - **Queue**: every download, delete and upload goes into a queue that the app works through one
   file at a time, with progress, cancellation and retrying of failed items.
 - **Thumbnail and size cache**: thumbnails and file sizes are stored on disk, keyed by printer, file

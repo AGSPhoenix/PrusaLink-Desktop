@@ -20,8 +20,8 @@ ICON, PREVIEW = (64, 36), (256, 144)  # file-list thumbnail box, large preview b
 HISTORY = 300  # temperature samples kept for the graph
 ORANGE, BLUE, MUTED, GRID = '#fa6831', '#3b9fe0', '#9a9a9a', '#3a3a3a'
 OPERATIONAL = {'IDLE', 'READY', 'FINISHED', 'STOPPED'}
-SORTS = {'Name': ('name', False), 'Name (Z-A)': ('name', True), 'Newest first': ('m_timestamp', True),
-         'Oldest first': ('m_timestamp', False), 'Largest first': ('size', True)}
+# File list columns, by Treeview column id (PySimpleGUI names them after their headings): label, sort field
+COLUMNS = {'#0': ('Name', 'name'), 'Size': ('Size', 'size'), 'Modified': ('Modified', 'm_timestamp')}
 TELEMETRY = ['Status', 'Nozzle', 'Heatbed', 'Print speed', 'Flow', 'Z height', 'Fans', 'Nozzle Ø']
 JOB_PROPS = ['Remaining', 'Estimated end', 'Printing time', 'File size']
 GCODE_TYPES = (('G-code', '*.gcode *.bgcode *.gco *.g'), ('All files', '*.*'))
@@ -169,8 +169,7 @@ def make_layout():
                    justification='left', expand_x=True, expand_y=True)
     storage = [
         [sg.Combo([], key='storage', readonly=True, enable_events=True, size=10),
-         sg.Text('', key='-PATH-', expand_x=True), sg.Text('Sort'),
-         sg.Combo(list(SORTS), 'Name', key='sort', readonly=True, enable_events=True, size=13)],
+         sg.Text('', key='-PATH-', expand_x=True)],
         [tree, sg.Column([[sg.Image(key='-PREVIEW-', size=PREVIEW)],
                           [sg.Text('', key='-DETAILS-', size=(34, 9))]], vertical_alignment='top')],
         [sg.Button('Up', key='up'), sg.Button('Refresh', key='refresh'), sg.Button('New folder...', key='mkdir'),
@@ -201,6 +200,9 @@ class App:
         self.window['files'].bind('<Double-Button-1>', '+open')
         self.window['files'].bind('<Return>', '+open')
         self.window['files'].bind('<Delete>', '+delete')
+        for column, (_, field) in COLUMNS.items():  # PySimpleGUI has no heading click events
+            self.window['files'].Widget.heading(column, command=lambda field=field: self.post('sort', field))
+        self.sort = tuple(sg.user_settings_get_entry('sort', ('name', False)))  # (field, descending)
         self.cache = DiskCache(cache_dir() / 'thumbnails')
         self.sizes = DiskCache(cache_dir() / 'sizes')  # Buddy firmware leaves sizes out of listings
         self.icons = {}  # thumbnail cache key -> rendered list icon
@@ -454,6 +456,8 @@ class App:
             self.list_dir(force=True)
 
     def list_dir(self, force=False):
+        if not self.root:  # storages not known yet; on_storages lists the folder once they are
+            return
         if force:
             self.etag, self.entries, self.selected, self.details_for = None, {}, [], None
             self.transfer.clear_background()  # thumbnails for the folder we're leaving
@@ -509,7 +513,7 @@ class App:
             self.transfer.submit('thumb', self.fetch_thumb, e['thumb_key'], e['refs']['thumbnail'], background=True)
 
     def sorted_entries(self):
-        field, reverse = SORTS[self.values.get('sort') or 'Name']
+        field, reverse = self.sort
         def key(e):
             return e['display_name'].lower() if field == 'name' else e.get(field) or 0
         files = sorted(self.entries.values(), key=key, reverse=reverse)
@@ -523,6 +527,9 @@ class App:
             data.insert('', e['path'], ' ' + e['display_name'], self.columns(e), icon=icon)
         tree = self.window['files']
         tree.update(values=data)
+        for column, (label, field) in COLUMNS.items():
+            arrow = (' \u25bc' if self.sort[1] else ' \u25b2') if field == self.sort[0] else ''
+            tree.Widget.heading(column, text=label + arrow)
         storage = self.window['storage'].get()
         self.window['-PATH-'].update('/'.join([storage] + [display for _, display in self.cwd]) + '/')
         if self.selected:
@@ -593,7 +600,7 @@ class App:
             self.window['files'].update(key=path, value=self.columns(e))
         if self.selected == [path]:
             self.show_details(e)
-        if was_pending and not self.sizes_pending and SORTS[self.values.get('sort') or 'Name'][0] == 'size':
+        if was_pending and not self.sizes_pending and self.sort[0] == 'size':
             self.show_files()  # the last size is in: put the list in order
 
     def show_details(self, e):
@@ -630,7 +637,10 @@ class App:
     def on_refresh(self, _):
         self.list_dir(force=True)
 
-    def on_sort(self, _):
+    def on_sort(self, field):
+        # A second click reverses; a first click on dates or sizes starts with the newest or largest.
+        self.sort = (field, not self.sort[1] if field == self.sort[0] else field != 'name')
+        sg.user_settings_set_entry('sort', self.sort)
         self.show_files()
 
     def on_tab(self, tab):
