@@ -13,7 +13,7 @@ from pathlib import Path
 import PySimpleGUI as sg
 from PIL import Image, ImageDraw
 
-from prusalink import Lane, Printer, Task, ThumbCache, fmt_size
+from prusalink import DiskCache, Lane, Printer, Task, fmt_size
 
 APP = 'PrusaLink Desktop'
 ICON, PREVIEW = (64, 36), (256, 144)  # file-list thumbnail box, large preview box
@@ -97,7 +97,7 @@ def cache_dir():
         base = '~/Library/Caches'
     else:
         base = os.environ.get('XDG_CACHE_HOME', '~/.cache')
-    return Path(base).expanduser() / 'PrusaLink-Desktop' / 'thumbnails'
+    return Path(base).expanduser() / 'PrusaLink-Desktop'
 
 
 def ask_conflicts(names, where):
@@ -201,7 +201,8 @@ class App:
         self.window['files'].bind('<Double-Button-1>', '+open')
         self.window['files'].bind('<Return>', '+open')
         self.window['files'].bind('<Delete>', '+delete')
-        self.cache = ThumbCache(cache_dir())
+        self.cache = DiskCache(cache_dir() / 'thumbnails')
+        self.sizes = DiskCache(cache_dir() / 'sizes')  # Buddy firmware leaves sizes out of listings
         self.icons = {}  # thumbnail cache key -> rendered list icon
         self.tasks, self.queue_rows, self.shown_tasks = [], None, []
         self.lanes, self.values, self.last_tick = (), {}, 0.0
@@ -227,7 +228,7 @@ class App:
         self.job_id = self.job_status = self.job_file = self.job_thumb = None
         self.storages, self.root, self.cwd, self.entries, self.selected = [], '', [], {}, []
         self.etag, self.listing_pending, self.last_listing, self.details_for = None, False, 0.0, None
-        self.thumbs_pending = set()
+        self.thumbs_pending, self.sizes_pending = set(), set()
         self.window['-NAME-'].update(self.printer.base)
         self.control.submit('info', self.printer.info)
         self.control.submit('storages', self.printer.storages)
@@ -456,7 +457,9 @@ class App:
         if force:
             self.etag, self.entries, self.selected, self.details_for = None, {}, [], None
             self.transfer.clear_background()  # thumbnails for the folder we're leaving
+            self.control.clear_background()  # and its sizes
             self.thumbs_pending.clear()
+            self.sizes_pending.clear()
             self.show_files()
         elif self.listing_pending:
             return
@@ -478,8 +481,14 @@ class App:
             e['path'] = f"{folder}/{e['name']}"
             if e.get('refs', {}).get('thumbnail'):
                 e['thumb_key'] = self.thumb_key(e['refs']['thumbnail'], e.get('m_timestamp'))
+            if e['type'] != 'FOLDER':
+                e['size_key'] = f"{self.printer.base}|{e['path']}|{e.get('m_timestamp')}"
+                if e.get('size') is None and (size := self.sizes.get(e['size_key'])) is not None:
+                    e['size'] = int(size)
             self.entries[e['path']] = e
         self.selected = [k for k in self.selected if k in self.entries]
+        no_size = [e for e in self.sorted_entries() if e['type'] != 'FOLDER' and e.get('size') is None
+                   and e['path'] not in self.sizes_pending]
         missing = []
         for e in self.sorted_entries():
             key = e.get('thumb_key')
@@ -490,7 +499,12 @@ class App:
                 else:
                     self.icons[key] = fit(data, ICON) if data else NO_PREVIEW
         self.show_files()
-        for e in missing:  # fetched in display order, interleaved with queued transfers
+        # Sizes are quick to get, so they go over the status connection rather than queueing behind the
+        # slow thumbnails; thumbnails come in display order, interleaved with queued transfers.
+        for e in no_size:
+            self.sizes_pending.add(e['path'])
+            self.control.submit('details', self.fetch_details, e['path'], e['size_key'], background=True)
+        for e in missing:
             self.thumbs_pending.add(e['thumb_key'])
             self.transfer.submit('thumb', self.fetch_thumb, e['thumb_key'], e['refs']['thumbnail'], background=True)
 
@@ -506,8 +520,7 @@ class App:
         for e in self.sorted_entries():
             icon = FOLDER if e['type'] == 'FOLDER' else self.icons.get(e.get('thumb_key'), LOADING if
                                                                         e.get('thumb_key') else NO_PREVIEW)
-            data.insert('', e['path'], ' ' + e['display_name'],
-                        [fmt_size(e['size']) if e.get('size') else '', fmt_date(e.get('m_timestamp'))], icon=icon)
+            data.insert('', e['path'], ' ' + e['display_name'], self.columns(e), icon=icon)
         tree = self.window['files']
         tree.update(values=data)
         storage = self.window['storage'].get()
@@ -548,23 +561,40 @@ class App:
         data = self.cache.get(one['thumb_key']) if one and one.get('thumb_key') else None
         self.window['-PREVIEW-'].update(data=FOLDER if one and one['type'] == 'FOLDER' else fit(data or b'', PREVIEW))
         self.show_details(one)
-        if one and one['type'] != 'FOLDER' and one['path'] != self.details_for:
+        if one and one['type'] != 'FOLDER' and not one.get('detailed') and one['path'] != self.details_for:
             self.details_for = one['path']
-            self.control.submit('details', self.fetch_details, one['path'])
+            self.control.submit('details', self.fetch_details, one['path'], one['size_key'])
         n = len(self.selected)
         self.window['-SELINFO-'].update(f'{n} selected' if n > 1 else '')
         self.update_buttons()
 
-    def fetch_details(self, s, path):
-        return path, self.printer.details(s, path)
+    @staticmethod
+    def columns(e):
+        return [fmt_size(e['size']) if e.get('size') is not None else '', fmt_date(e.get('m_timestamp'))]
+
+    def fetch_details(self, s, path, size_key):
+        try:
+            info = self.printer.details(s, path) or {}
+        except Exception:  # noqa: BLE001 - the size stays blank; selecting the file asks again
+            return path, {}
+        if info.get('size') is not None:
+            self.sizes.put(size_key, str(info['size']).encode())
+        return path, info
 
     def on_details(self, result):
-        if not isinstance(result, Exception) and result[0] in self.entries and self.selected == [result[0]]:
-            e = self.entries[result[0]]
-            e.update({k: v for k, v in (result[1] or {}).items() if k in ('size', 'meta')})
-            if e.get('size'):  # Buddy firmware leaves sizes out of folder listings
-                self.window['files'].update(key=e['path'], value=[fmt_size(e['size']), fmt_date(e.get('m_timestamp'))])
+        path, info = result
+        was_pending = path in self.sizes_pending
+        self.sizes_pending.discard(path)
+        e = self.entries.get(path)
+        if not e or not info:
+            return
+        e.update({k: v for k, v in info.items() if k in ('size', 'meta')}, detailed=True)
+        if path in self.window['files'].KeyToID:
+            self.window['files'].update(key=path, value=self.columns(e))
+        if self.selected == [path]:
             self.show_details(e)
+        if was_pending and not self.sizes_pending and SORTS[self.values.get('sort') or 'Name'][0] == 'size':
+            self.show_files()  # the last size is in: put the list in order
 
     def show_details(self, e):
         if not e:

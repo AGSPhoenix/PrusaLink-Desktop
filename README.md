@@ -20,8 +20,8 @@ download, delete and upload through a queue that runs one transfer at a time.
   **delete** or **upload** them in bulk.
 - **Queue**: every download, delete and upload goes into a queue that the app works through one
   file at a time, with progress, cancellation and retrying of failed items.
-- **Thumbnail cache**: thumbnails are stored on disk, keyed by printer, file and modification time,
-  so a file's preview is fetched once. Files without a preview are remembered too.
+- **Thumbnail and size cache**: thumbnails and file sizes are stored on disk, keyed by printer, file
+  and modification time, so each is fetched once per file. Files without a preview are remembered too.
 
 ## Install and run
 
@@ -44,9 +44,12 @@ The HTTP server on the printer runs on a microcontroller with three connection s
 is careful with it:
 
 - It never has more than two requests in flight: one connection polls status (every 2 seconds) and
-  runs quick commands, the other works through the queue and the thumbnails. Both use keep-alive.
+  runs quick requests, the other works through the queue and the thumbnails. Both use keep-alive.
 - Queued operations run strictly one after another. Thumbnail fetches are interleaved with them,
   one at a time, so neither a bulk download nor a folder full of new thumbnails holds up the other.
+- Firmware-based printers leave file sizes out of folder listings, so the app asks for each missing
+  size, one at a time. These requests are quick and go over the status connection, so the sizes
+  fill in well before the (slow) thumbnails.
 - The open folder is re-checked every 10 seconds while the Storage tab is visible, using the
   firmware's ETags, so an unchanged folder costs a `304 Not Modified`.
 - After a transfer is cancelled, the app waits a second before starting the next one.
@@ -57,14 +60,12 @@ is careful with it:
   PySimpleGUI's settings folder: `~/.config/PySimpleGUI/settings` on Linux,
   `~/Library/Application Support/PySimpleGUI/settings` on macOS,
   `%LOCALAPPDATA%\PySimpleGUI\settings` on Windows. Add `"poll_interval": 5` there to poll less often.
-- Thumbnails are in `PrusaLink-Desktop/thumbnails` in the user cache folder (`~/.cache`,
-  `~/Library/Caches` or `%LOCALAPPDATA%`). Delete the folder to clear it.
+- Thumbnails and sizes are in `PrusaLink-Desktop/thumbnails` and `PrusaLink-Desktop/sizes` in the user
+  cache folder (`~/.cache`, `~/Library/Caches` or `%LOCALAPPDATA%`). Delete them to clear the cache.
 
 ## Limitations
 
 - Downloads skip folders (deleting a folder deletes its contents).
-- Firmware-based printers leave file sizes out of folder listings. A file's size appears once it
-  has been selected.
 - Cameras, printer settings and the Raspberry Pi version's printer controls are not included.
 
 ## Development

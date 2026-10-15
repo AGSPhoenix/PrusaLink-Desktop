@@ -8,7 +8,7 @@ import pytest
 
 sys.path[:0] = [str(Path(__file__).parents[1]), str(Path(__file__).parents[1] / 'tools')]
 import mock_printer  # noqa: E402
-from prusalink import ApiError, Lane, Printer, Task, ThumbCache  # noqa: E402
+from prusalink import ApiError, Lane, Printer, Task, DiskCache  # noqa: E402
 
 
 @pytest.fixture(scope='module')
@@ -106,9 +106,9 @@ def test_lane_is_sequential_and_alternates(printer):
     assert mock_printer.max_in_flight == 1
 
 
-def test_thumb_cache(tmp_path):
-    cache = ThumbCache(tmp_path / 'thumbs')
+def test_disk_cache(tmp_path):
+    cache = DiskCache(tmp_path / 'thumbs')
     assert cache.get('a') is None
     cache.put('a', b'png')
     cache.put('b', b'')  # "no preview" is remembered too
-    assert ThumbCache(tmp_path / 'thumbs').get('a') == b'png' and cache.get('b') == b''
+    assert DiskCache(tmp_path / 'thumbs').get('a') == b'png' and cache.get('b') == b''

@@ -286,9 +286,9 @@ class Lane(threading.Thread):
         self.session.close()
 
 
-class ThumbCache:
-    """Thumbnails on disk, keyed by printer + file path + modification time, so an unchanged
-    file is never fetched twice. An empty file records "this G-code has no preview"."""
+class DiskCache:
+    """Small values (thumbnails, file sizes) on disk. Keys include the printer, file path and
+    modification time, so nothing is fetched twice for an unchanged file."""
 
     def __init__(self, root):
         self.root = Path(root)
