@@ -203,7 +203,7 @@ class App:
         self.window['files'].bind('<Delete>', '+delete')
         self.cache = ThumbCache(cache_dir())
         self.icons = {}  # thumbnail cache key -> rendered list icon
-        self.tasks, self.queue_rows = [], None
+        self.tasks, self.queue_rows, self.shown_tasks = [], None, []
         self.lanes, self.values, self.last_tick = (), {}, 0.0
         # Workers report back through this queue, never by touching Tk: PySimpleGUI's
         # write_event_value() calls into Tk from the worker thread, which can crash Tk builds.
@@ -610,8 +610,9 @@ class App:
     def tick(self):
         rows = [[t.kind, t.name, t.status] for t in self.tasks]
         if rows != self.queue_rows:
-            self.window['queue'].update(values=rows, select_rows=self.values.get('queue') or [])
-            self.queue_rows = rows
+            selected = self.selected_tasks()  # rows may have been removed: keep the selection by task
+            self.window['queue'].update(values=rows, select_rows=[i for i, t in enumerate(self.tasks) if t in selected])
+            self.queue_rows, self.shown_tasks = rows, list(self.tasks)
             running = [t for t in self.tasks if t.state == 'Running']
             queued = sum(t.state == 'Queued' for t in self.tasks)
             if running or queued:
@@ -706,14 +707,18 @@ class App:
             if task.state == 'Queued':  # otherwise it would say "Queued" until the worker reaches it
                 task.state = 'Cancelled'
 
+    def selected_tasks(self):
+        """Tasks highlighted in the queue table. Row numbers refer to the table as last drawn."""
+        return [self.shown_tasks[i] for i in self.values.get('queue') or [] if i < len(self.shown_tasks)]
+
     def on_cancel(self, _):
-        self.cancel(self.tasks[i] for i in self.values.get('queue') or [] if i < len(self.tasks))
+        self.cancel(self.selected_tasks())
 
     def on_retry(self, _):
-        for i, task in enumerate(self.tasks):
+        for task in self.tasks:
             if task.state.startswith('Failed'):
-                self.tasks[i] = Task(task.kind, task.name, task.fn, *task.args, **task.kwargs)
-                self.transfer.submit('task', self.tasks[i])
+                task.state, task.cancelled = 'Queued', False
+                self.transfer.submit('task', task)
 
     def on_clear(self, _):
         self.tasks = [t for t in self.tasks if not t.finished]
